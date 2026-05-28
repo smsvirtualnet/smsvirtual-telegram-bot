@@ -1,0 +1,2 @@
+# Keep this directory in git so the SQLite file and logs have a home.
+# Local SQLite files and logs are gitignored from the parent .gitignore.

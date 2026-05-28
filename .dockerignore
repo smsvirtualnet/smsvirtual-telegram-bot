@@ -1,0 +1,44 @@
+# Files we do NOT want shipped into the image build context.
+# Keeps the image lean and avoids leaking secrets / local state.
+
+# Local dependency build artifacts (re-installed inside the image).
+node_modules
+npm-debug.log*
+
+# Local runtime state (mounted as a volume at runtime).
+data
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.log
+
+# Secrets — must never be baked into the image.
+.env
+.env.*
+!.env.example
+
+# VCS, IDE noise.
+.git
+.gitignore
+.gitattributes
+.github
+.vscode
+.idea
+.DS_Store
+
+# Docs & tooling that the runtime does not need.
+README.md
+docs
+*.md
+!package.json
+
+# Local shell scripts (the container uses node directly).
+install.sh
+start.sh
+update.sh
+backup.sh
+restore.sh
+
+# CI, lockfiles unrelated to npm.
+yarn.lock
+pnpm-lock.yaml

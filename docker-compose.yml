@@ -1,0 +1,130 @@
+# Compose stack for the SMS Virtual Telegram Bot.
+#
+# Goal: everything runs inside Docker. You never need to install Node,
+# better-sqlite3, or sqlite3 on the host.
+#
+# Three services:
+#
+#   migrate     — one-shot runner that executes db/migrations.js against
+#                 the persistent volume, then exits 0. Re-runnable safely;
+#                 already-applied migrations are skipped.
+#
+#   bot         — long-running Telegraf process. Starts only after `migrate`
+#                 exits successfully (depends_on: service_completed_successfully).
+#                 Note: the bot's index.js also calls runMigrations() on
+#                 boot, so migrations are idempotent and double-running them
+#                 is a no-op. The dedicated `migrate` service exists so you
+#                 can apply migrations without booting the bot, and so the
+#                 boot order is explicit in compose.
+#
+#   sqlite-cli  — opt-in shell helper (`profiles: tools`). Mounts the same
+#                 volume so you can run `.tables`, `.schema`, ad-hoc
+#                 SELECTs, or `.backup` against the live DB without
+#                 installing sqlite3 on the host.
+#
+# ─── Quickstart ──────────────────────────────────────────────────────────────
+#
+#   1. Bootstrap config:
+#        cp .env.example .env && nano .env
+#
+#   2. Run migrations once + start the bot:
+#        docker compose up -d --build
+#        docker compose logs -f bot
+#
+#      (The migrate service runs first, exits 0, then bot starts.)
+#
+#   3. Re-run migrations only (e.g. after pulling new code):
+#        docker compose run --rm migrate
+#
+#   4. Open an interactive sqlite shell against the live DB:
+#        docker compose --profile tools run --rm sqlite-cli
+#        # then inside:  .tables
+#        #               SELECT telegram_id, api_key_masked FROM users;
+#
+#   5. Snapshot the DB without touching the host:
+#        docker compose --profile tools run --rm \
+#          sqlite-cli ".backup '/data/backups/bot-$(date -u +%Y%m%dT%H%M%SZ).sqlite'"
+#
+#   6. Stop everything:
+#        docker compose down
+#
+#   7. Wipe state (volumes too) for a clean test run:
+#        docker compose down -v && rm -rf data/* && docker compose up -d --build
+#
+# ─── Permissions ─────────────────────────────────────────────────────────────
+# All containers run as the `node` user (UID 1000) baked into the Dockerfile.
+# If your host's ./data is owned by a different UID, run once:
+#   sudo chown -R 1000:1000 data
+
+services:
+  # ---------------------------------------------------------------------------
+  # One-shot migration runner.
+  # ---------------------------------------------------------------------------
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: smsvirtual-telegram-bot:latest
+    container_name: smsvirtual-telegram-bot-migrate
+    restart: "no"
+    env_file:
+      - .env
+    environment:
+      DATABASE_FILE: /app/data/bot.sqlite
+      NODE_ENV: production
+    volumes:
+      - ./data:/app/data
+    # Run the npm script defined in package.json:
+    #   "migrate": "node -e \"require('./src/db/migrations').runMigrations(require('./src/db/database').getDatabase())\""
+    command: ["npm", "run", "migrate"]
+
+  # ---------------------------------------------------------------------------
+  # Long-running bot.
+  # ---------------------------------------------------------------------------
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: smsvirtual-telegram-bot:latest
+    container_name: smsvirtual-telegram-bot
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    env_file:
+      - .env
+    environment:
+      # Force the SQLite location inside the mounted volume, regardless of
+      # what DATABASE_FILE says in .env.
+      DATABASE_FILE: /app/data/bot.sqlite
+      NODE_ENV: production
+    volumes:
+      - ./data:/app/data
+    stop_grace_period: 30s
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.5"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  # ---------------------------------------------------------------------------
+  # SQLite shell / backup helper.
+  # ---------------------------------------------------------------------------
+  sqlite-cli:
+    image: keinos/sqlite3:latest
+    container_name: smsvirtual-telegram-bot-sqlite
+    profiles:
+      - tools
+    working_dir: /data
+    volumes:
+      - ./data:/data
+    entrypoint: ["sqlite3", "/data/bot.sqlite"]
